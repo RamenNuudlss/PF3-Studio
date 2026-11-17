@@ -1,0 +1,96 @@
+{
+  "name": "pf3-studio",
+  "productName": "PF3 Studio",
+  "version": "0.1.0",
+  "description": "Driverless replacement software for the Microboards PF-3 Print Factory disc printer",
+  "author": "RamenNuudls",
+  "license": "MIT",
+  "main": "dist/main.js",
+  "scripts": {
+    "build:main": "esbuild electron/main.ts electron/preload.ts electron/encodeWorker.ts --bundle --platform=node --format=cjs --outdir=dist --external:electron --external:koffi --sourcemap",
+    "build:ui": "vite build",
+    "build": "npm run build:main && npm run build:ui",
+    "test": "tsx tests/run.ts",
+    "dist": "npm run build && electron-builder --win --x64",
+    "start": "electron ."
+  },
+  "build": {
+    "appId": "com.ramennuudls.pf3studio",
+    "productName": "PF3 Studio",
+    "files": [
+      "dist/**",
+      "ui/**",
+      "assets/**",
+      "package.json",
+      "!node_modules/@koromix/koffi-linux-*/**"
+    ],
+    "extraResources": [
+      {
+        "from": "vendor",
+        "to": "vendor",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "zip",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/icon.png",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false,
+      "shortcutName": "PF3 Studio"
+    },
+    "asarUnpack": [
+      "node_modules/koffi/**",
+      "node_modules/@koromix/**",
+      "dist/encodeWorker.js"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "artifactName": "PF3-Studio-${version}-${arch}.${ext}"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.3.0",
+    "electron": "^33.4.11",
+    "electron-builder": "^26.18.0",
+    "esbuild": "^0.28.2",
+    "puppeteer-core": "^25.17.0",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.8",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "konva": "^10.9.1",
+    "react-konva": "^19.3.2"
+  },
+  "dependencies": {
+    "koffi": "^3.3.8",
+    "@koromix/koffi-win32-x64": "3.3.8"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/RamenNuudlss/PF3-Studio.git"
+  },
+  "homepage": "https://github.com/RamenNuudlss/PF3-Studio"
+}

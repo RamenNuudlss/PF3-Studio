@@ -1,0 +1,152 @@
+/**
+ * Driverless access to the PF-3 through Windows' inbox USB printing class driver (usbprint.sys).
+ * Same path the original Microboards Toolbox used: enumerate GUID_DEVINTERFACE_USBPRINT,
+ * open the interface, WriteFile() raw PCL, IOCTL_PAR_QUERY_DEVICE_ID for status.
+ */
+import koffi from 'koffi';
+
+const GUID_DEVINTERFACE_USBPRINT = { Data1: 0x28d78fad, Data2: 0x5a12, Data3: 0x11d1, Data4: [0xae, 0x5b, 0x00, 0x00, 0xf8, 0x03, 0xa8, 0xc2] };
+const DIGCF_PRESENT = 0x02;
+const DIGCF_DEVICEINTERFACE = 0x10;
+const GENERIC_READ = 0x80000000;
+const GENERIC_WRITE = 0x40000000;
+const FILE_SHARE_READ = 1;
+const FILE_SHARE_WRITE = 2;
+const OPEN_EXISTING = 3;
+const IOCTL_PAR_QUERY_DEVICE_ID = 0x0016000c;
+const IOCTL_USBPRINT_GET_LPT_STATUS = 0x00220030;
+const IOCTL_USBPRINT_GET_1284_ID = 0x00220034;
+const IOCTL_USBPRINT_SOFT_RESET = 0x00220040;
+
+export const PF3_MATCH = /vid_03f0&pid_6104/i;
+
+let api: ReturnType<typeof bind> | null = null;
+
+function bind() {
+  const GUID = koffi.struct('GUID', { Data1: 'uint32', Data2: 'uint16', Data3: 'uint16', Data4: koffi.array('uint8', 8) });
+  const SP_DEVICE_INTERFACE_DATA = koffi.struct('SP_DEVICE_INTERFACE_DATA', {
+    cbSize: 'uint32', InterfaceClassGuid: GUID, Flags: 'uint32', Reserved: 'uintptr_t',
+  });
+  const setupapi = koffi.load('setupapi.dll');
+  const kernel32 = koffi.load('kernel32.dll');
+  const HANDLE = koffi.pointer('HANDLE', koffi.opaque());
+  return {
+    SP_DEVICE_INTERFACE_DATA,
+    SetupDiGetClassDevsW: setupapi.func('void* __stdcall SetupDiGetClassDevsW(GUID *ClassGuid, const char16_t *Enumerator, void *hwnd, uint32_t Flags)'),
+    SetupDiEnumDeviceInterfaces: setupapi.func('bool __stdcall SetupDiEnumDeviceInterfaces(void *DeviceInfoSet, void *DeviceInfoData, GUID *InterfaceClassGuid, uint32_t MemberIndex, _Inout_ SP_DEVICE_INTERFACE_DATA *DeviceInterfaceData)'),
+    SetupDiGetDeviceInterfaceDetailW: setupapi.func('bool __stdcall SetupDiGetDeviceInterfaceDetailW(void *DeviceInfoSet, SP_DEVICE_INTERFACE_DATA *DeviceInterfaceData, _Out_ uint8_t *Detail, uint32_t DetailSize, _Out_ uint32_t *RequiredSize, void *DeviceInfoData)'),
+    SetupDiDestroyDeviceInfoList: setupapi.func('bool __stdcall SetupDiDestroyDeviceInfoList(void *DeviceInfoSet)'),
+    CreateFileW: kernel32.func('HANDLE __stdcall CreateFileW(const char16_t *name, uint32_t access, uint32_t share, void *sa, uint32_t disp, uint32_t flags, void *tmpl)'),
+    WriteFile: kernel32.func('bool __stdcall WriteFile(HANDLE h, const uint8_t *buf, uint32_t len, _Out_ uint32_t *written, void *ov)'),
+    ReadFile: kernel32.func('bool __stdcall ReadFile(HANDLE h, _Out_ uint8_t *buf, uint32_t len, _Out_ uint32_t *read, void *ov)'),
+    DeviceIoControl: kernel32.func('bool __stdcall DeviceIoControl(HANDLE h, uint32_t code, void *inBuf, uint32_t inLen, _Out_ uint8_t *outBuf, uint32_t outLen, _Out_ uint32_t *returned, void *ov)'),
+    CloseHandle: kernel32.func('bool __stdcall CloseHandle(HANDLE h)'),
+    GetLastError: kernel32.func('uint32_t __stdcall GetLastError()'),
+    HANDLE,
+  };
+}
+
+function win() {
+  if (process.platform !== 'win32') throw new Error('USB printing is only available on Windows');
+  if (!api) api = bind();
+  return api;
+}
+
+const isInvalid = (h: unknown) => h === null || koffi.address(h as any) === BigInt('0xFFFFFFFFFFFFFFFF') || koffi.address(h as any) === 0n;
+
+export interface UsbPrintDevice { path: string; serial: string | null }
+
+/** List usbprint interfaces that belong to a PF-3 (or all, if `all`). */
+export function listDevices(all = false): UsbPrintDevice[] {
+  const w = win();
+  const guid = { ...GUID_DEVINTERFACE_USBPRINT };
+  const hdev = w.SetupDiGetClassDevsW(guid, null, null, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
+  if (isInvalid(hdev)) return [];
+  const out: UsbPrintDevice[] = [];
+  try {
+    for (let i = 0; i < 64; i++) {
+      const ifd = { cbSize: koffi.sizeof(w.SP_DEVICE_INTERFACE_DATA), InterfaceClassGuid: { Data1: 0, Data2: 0, Data3: 0, Data4: [0, 0, 0, 0, 0, 0, 0, 0] }, Flags: 0, Reserved: 0 };
+      if (!w.SetupDiEnumDeviceInterfaces(hdev, null, guid, i, ifd)) break;
+      const detail = Buffer.alloc(2048);
+      detail.writeUInt32LE(8, 0); // sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA_W) on x64
+      const req = [0];
+      if (!w.SetupDiGetDeviceInterfaceDetailW(hdev, ifd, detail, detail.length, req, null)) continue;
+      const path = detail.subarray(4).toString('utf16le').split('\0')[0];
+      if (!all && !PF3_MATCH.test(path)) continue;
+      const m = path.match(/#vid_[0-9a-f]{4}&pid_[0-9a-f]{4}#([^#]+)#/i);
+      out.push({ path, serial: m ? m[1] : null });
+    }
+  } finally {
+    w.SetupDiDestroyDeviceInfoList(hdev);
+  }
+  return out;
+}
+
+export class UsbPrintHandle {
+  private h: any;
+  constructor(public readonly path: string) {
+    const w = win();
+    this.h = w.CreateFileW(path, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, null, OPEN_EXISTING, 0, null);
+    if (isInvalid(this.h)) {
+      const err = w.GetLastError();
+      throw Object.assign(new Error(err === 5 ? 'The printer is in use by another program (access denied)' : err === 2 ? 'Printer disconnected' : `Could not open printer (Windows error ${err})`), { code: err });
+    }
+  }
+
+  close() {
+    if (this.h) { win().CloseHandle(this.h); this.h = null; }
+  }
+
+  /** IEEE-1284 device ID string (contains the live S: status field). */
+  deviceId(): string {
+    const w = win();
+    for (const code of [IOCTL_PAR_QUERY_DEVICE_ID, IOCTL_USBPRINT_GET_1284_ID]) {
+      const buf = Buffer.alloc(4096);
+      const ret = [0];
+      if (!w.DeviceIoControl(this.h, code, null, 0, buf, buf.length, ret, null)) continue;
+      let b = buf.subarray(0, ret[0]);
+      // GET_1284_ID returns a 2-byte big-endian length prefix
+      if (b.length >= 2 && b.readUInt16BE(0) === b.length) b = b.subarray(2);
+      const s = b.toString('latin1').replace(/\0+$/, '');
+      if (s.includes(':')) return s;
+    }
+    throw new Error(`Device ID query failed (Windows error ${w.GetLastError()})`);
+  }
+
+  /** Legacy LPT status byte: bit3 !error, bit4 select, bit5 paper empty. */
+  lptStatus(): number | null {
+    const w = win();
+    const buf = Buffer.alloc(1); const ret = [0];
+    return w.DeviceIoControl(this.h, IOCTL_USBPRINT_GET_LPT_STATUS, null, 0, buf, 1, ret, null) ? buf[0] : null;
+  }
+
+  softReset(): boolean {
+    const w = win();
+    const ret = [0];
+    return w.DeviceIoControl(this.h, IOCTL_USBPRINT_SOFT_RESET, null, 0, Buffer.alloc(0), 0, ret, null);
+  }
+
+  /** Blocking write on a koffi worker thread so the UI never freezes. */
+  write(data: Buffer): Promise<number> {
+    const w = win();
+    return new Promise((resolve, reject) => {
+      const written = [0];
+      w.WriteFile.async(this.h, data, data.length, written, null, (err: any, ok: boolean) => {
+        if (err) return reject(err);
+        if (!ok) return reject(new Error(`Write to printer failed (Windows error ${w.GetLastError()})`));
+        resolve(written[0]);
+      });
+    });
+  }
+
+  read(max = 4096): Promise<Buffer> {
+    const w = win();
+    return new Promise((resolve, reject) => {
+      const buf = Buffer.alloc(max); const got = [0];
+      w.ReadFile.async(this.h, buf, max, got, null, (err: any, ok: boolean) => {
+        if (err) return reject(err);
+        resolve(ok ? buf.subarray(0, got[0]) : Buffer.alloc(0));
+      });
+    });
+  }
+}
