@@ -41,6 +41,7 @@ function bind() {
     ReadFile: kernel32.func('bool __stdcall ReadFile(HANDLE h, _Out_ uint8_t *buf, uint32_t len, _Out_ uint32_t *read, void *ov)'),
     DeviceIoControl: kernel32.func('bool __stdcall DeviceIoControl(HANDLE h, uint32_t code, void *inBuf, uint32_t inLen, _Out_ uint8_t *outBuf, uint32_t outLen, _Out_ uint32_t *returned, void *ov)'),
     CloseHandle: kernel32.func('bool __stdcall CloseHandle(HANDLE h)'),
+    CancelIoEx: kernel32.func('bool __stdcall CancelIoEx(HANDLE h, void *ov)'),
     GetLastError: kernel32.func('uint32_t __stdcall GetLastError()'),
     HANDLE,
   };
@@ -137,6 +138,36 @@ export class UsbPrintHandle {
         resolve(written[0]);
       });
     });
+  }
+
+  /**
+   * Read with a timeout. usbprint reads are synchronous, so on timeout the pending
+   * ReadFile is cancelled with CancelIoEx and an empty buffer is returned.
+   */
+  readTimeout(ms: number, max = 8192): Promise<Buffer> {
+    const w = win();
+    return new Promise((resolve) => {
+      let done = false;
+      const buf = Buffer.alloc(max); const got = [0];
+      const t = setTimeout(() => { if (!done) { w.CancelIoEx(this.h, null); } }, ms);
+      w.ReadFile.async(this.h, buf, max, got, null, (err: any, ok: boolean) => {
+        done = true; clearTimeout(t);
+        resolve(!err && ok ? buf.subarray(0, got[0]) : Buffer.alloc(0));
+      });
+    });
+  }
+
+  /** Collect back-channel bytes until the printer stays quiet for `quietMs` (or `totalMs` passes). */
+  async readUntilQuiet(totalMs = 4000, quietMs = 700): Promise<Buffer> {
+    const parts: Buffer[] = [];
+    const t0 = Date.now();
+    let lastData = Date.now();
+    while (Date.now() - t0 < totalMs) {
+      const b = await this.readTimeout(Math.min(quietMs, totalMs - (Date.now() - t0)));
+      if (b.length) { parts.push(b); lastData = Date.now(); }
+      else if (Date.now() - lastData >= quietMs) break;
+    }
+    return Buffer.concat(parts);
   }
 
   read(max = 4096): Promise<Buffer> {

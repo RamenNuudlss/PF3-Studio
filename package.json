@@ -1,7 +1,7 @@
 {
   "name": "pf3-studio",
   "productName": "PF3 Studio",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Driverless replacement software for the Microboards PF-3 Print Factory disc printer",
   "author": "RamenNuudls",
   "license": "MIT",

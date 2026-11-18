@@ -8,6 +8,7 @@ import { Stats } from './stats';
 import { vendorAvailability, vendorDirs } from './vendor';
 import { penLabelToValue, JobOptions } from './core/pcl';
 import { listDevices } from './device/usbprint';
+import { isReadOnly, scanDs2 } from './firmware';
 
 /* ------------------------------------------------------------ settings */
 interface Settings {
@@ -162,6 +163,17 @@ function registerIpc() {
   ipcMain.handle('printer:rawDeviceId', () => printer.rawDeviceId());
   ipcMain.handle('printer:devices', () => { try { return listDevices(true); } catch (e: any) { return { error: e.message }; } });
   ipcMain.handle('printer:softReset', () => printer.softReset());
+  ipcMain.handle('fw:query', async (_e, { cmd, allowWrite }: { cmd: string; allowWrite: boolean }) => {
+    if (!allowWrite && !isReadOnly(cmd)) return { ok: false, error: 'Blocked: this is not a read-only command. Tick "Allow write commands" to send it.' };
+    try { return { ok: true, reply: await printer.udwQuery(cmd) }; } catch (e: any) { return { ok: false, error: e.message }; }
+  });
+  let scanSignal = { cancelled: false };
+  ipcMain.handle('fw:scan', async (_e, { from, to }: { from: number; to: number }) => {
+    scanSignal = { cancelled: false };
+    const res = await scanDs2(printer, from, to, (done, total, found) => send('fw:scanProgress', { done, total, found }), scanSignal);
+    return res;
+  });
+  ipcMain.handle('fw:scanStop', () => { scanSignal.cancelled = true; });
 
   ipcMain.handle('jobs:list', () => queue.list().map(({ items, ...j }) => ({ ...j, discs: items.length, labels: items.map((x) => x.label) })));
   ipcMain.handle('jobs:print', (_e, req: { name: string; pngs: { data: string; label: string }[]; options: JobOptions }) => {

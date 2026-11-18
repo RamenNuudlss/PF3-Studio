@@ -122,6 +122,30 @@ export class PrinterService extends EventEmitter {
     });
   }
 
+  /**
+   * Send one firmware ("underware") command line and return the printer's text reply.
+   * Same wrapper and back-channel the Microboards status monitor used for ds2.get.
+   */
+  async udwQuery(cmd: string, totalMs = 4000): Promise<string> {
+    if (VIRTUAL_DIR) return `(virtual printer) ${cmd}`;
+    return this.withLock(async () => {
+      const devs = listDevices();
+      if (!devs.length) throw new Error('PF-3 not connected');
+      const h = new UsbPrintHandle(devs[0].path);
+      this.writing = true;
+      try {
+        await h.readUntilQuiet(300, 150); // drain anything stale
+        const line = cmd.trim().endsWith(';') ? cmd.trim() : cmd.trim() + ';';
+        await h.write(Buffer.concat([Buffer.from([0x1b]), Buffer.from('%P' + line + 'udw.quit;', 'latin1')]));
+        const reply = await h.readUntilQuiet(totalMs, 600);
+        return reply.toString('latin1').replace(/\0/g, '').trim();
+      } finally {
+        this.writing = false;
+        h.close();
+      }
+    });
+  }
+
   async softReset(): Promise<boolean> {
     return this.withLock(() => {
       const devs = listDevices();

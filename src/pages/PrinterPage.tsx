@@ -6,6 +6,7 @@ import { Check, Modal } from '../components/ui';
 import { diagnosticDisc } from '../design/templates';
 import { renderPage, canvasToPngBase64 } from '../design/render';
 import { DEFAULT_PRINT } from '../design/types';
+import FirmwareConsole from '../components/FirmwareConsole';
 
 const LABELS = [48, 40, 32, 24, 16, 8, 0, -8, -16, -24, -32, -40, -48];
 const PATTERNS = ['Black to Color Horizontal', 'Black to Color Vertical', 'Black Bidi Alignment', 'Color Bidi Alignment'];
@@ -132,6 +133,8 @@ export default function PrinterPage() {
           </div>
           <div className="label" style={{ marginBottom: 6 }}>IEEE-1284 device ID</div>
           <pre className="code" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{diag.split(';').filter(Boolean).join(';\n')}</pre>
+          <div className="divider" />
+          <FirmwareConsole />
         </Modal>
       )}
     </div>

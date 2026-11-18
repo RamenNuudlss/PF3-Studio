@@ -26,6 +26,12 @@ contextBridge.exposeInMainWorld('pf3', {
     onUpdate: on('jobs:update'),
     onAttention: on('jobs:attention'),
   },
+  fw: {
+    query: (cmd: string, allowWrite = false) => ipcRenderer.invoke('fw:query', { cmd, allowWrite }),
+    scan: (from: number, to: number) => ipcRenderer.invoke('fw:scan', { from, to }),
+    scanStop: () => ipcRenderer.invoke('fw:scanStop'),
+    onScanProgress: on('fw:scanProgress'),
+  },
   pen: { labelToValue: (l: number[]) => ipcRenderer.invoke('pen:labelToValue', l) },
   stats: {
     get: () => ipcRenderer.invoke('stats:get'),
