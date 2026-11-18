@@ -8,6 +8,7 @@ const VIRTUAL_ID = 'MFG:Microboards;MDL:PF-3 (virtual);CMD:PCL3GUI,PJL,DW-PCL;CL
 let virtualSeq = 0;
 import { listDevices, UsbPrintHandle } from './device/usbprint';
 import { parseStatus, PrinterStatus, STATE_TEXT } from './core/status';
+import { udw } from './core/pcl';
 
 export interface ConnState {
   connected: boolean;
@@ -126,7 +127,7 @@ export class PrinterService extends EventEmitter {
    * Send one firmware ("underware") command line and return the printer's text reply.
    * Same wrapper and back-channel the Microboards status monitor used for ds2.get.
    */
-  async udwQuery(cmd: string, totalMs = 4000): Promise<string> {
+  async udwQuery(cmd: string, totalMs = 12000): Promise<string> {
     if (VIRTUAL_DIR) return `(virtual printer) ${cmd}`;
     return this.withLock(async () => {
       const devs = listDevices();
@@ -136,9 +137,19 @@ export class PrinterService extends EventEmitter {
       try {
         await h.readUntilQuiet(300, 150); // drain anything stale
         const line = cmd.trim().endsWith(';') ? cmd.trim() : cmd.trim() + ';';
-        await h.write(Buffer.concat([Buffer.from([0x1b]), Buffer.from('%P' + line + 'udw.quit;', 'latin1')]));
-        const reply = await h.readUntilQuiet(totalMs, 600);
-        return reply.toString('latin1').replace(/\0/g, '').trim();
+        const expected = line.split(';').filter((x) => x.trim()).length;
+        // exact wrapper used by the Microboards language monitor (SendMechwareCmd)
+        await h.write(udw(line));
+        // GetMechwareResponseASCII: read until the reply ends with ';' (original waited up to 100 s)
+        let reply = '';
+        const t0 = Date.now();
+        while (Date.now() - t0 < totalMs) {
+          const b = await h.readTimeout(1500);
+          if (b.length) reply += b.toString('latin1');
+          const answered = (reply.match(/;/g) ?? []).length;
+          if (reply && /;\s*$/.test(reply) && answered >= expected) break;
+        }
+        return reply.replace(/\0/g, '').trim();
       } finally {
         this.writing = false;
         h.close();

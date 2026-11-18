@@ -22,7 +22,7 @@ export interface Ds2Entry { id: number; value: string }
 
 /** Split a multi-query reply into lines (the printer answers one line per query). */
 function replyLines(reply: string): string[] {
-  return reply.split(/\r?\n|\r/).map((l) => l.trim()).filter(Boolean);
+  return reply.split(/;|\r?\n|\r/).map((l) => l.trim()).filter(Boolean);
 }
 
 export async function scanDs2(printer: PrinterService, from: number, to: number, onProgress: (done: number, total: number, found: number) => void, signal: { cancelled: boolean }): Promise<Ds2Entry[]> {
@@ -32,7 +32,7 @@ export async function scanDs2(printer: PrinterService, from: number, to: number,
   for (let id = from; id <= to; id += BATCH) {
     if (signal.cancelled) break;
     const ids = Array.from({ length: Math.min(BATCH, to - id + 1) }, (_, i) => id + i);
-    const reply = await printer.udwQuery(ids.map((i) => `ds2.get ${i};`).join(''), 3000);
+    const reply = await printer.udwQuery(ids.map((i) => `ds2.get ${i};`).join(''), 8000);
     const lines = replyLines(reply);
     if (lines.length === ids.length) {
       ids.forEach((i, k) => out.push({ id: i, value: lines[k] }));
@@ -40,7 +40,7 @@ export async function scanDs2(printer: PrinterService, from: number, to: number,
       // replies didn't line up one-per-query: fall back to single queries for this batch
       for (const i of ids) {
         if (signal.cancelled) break;
-        const r = await printer.udwQuery(`ds2.get ${i};`, 1500);
+        const r = await printer.udwQuery(`ds2.get ${i};`, 4000);
         if (r) out.push({ id: i, value: replyLines(r).join(' | ') });
       }
     }

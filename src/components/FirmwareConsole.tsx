@@ -24,7 +24,7 @@ export default function FirmwareConsole() {
   const run = async (c: string) => {
     setBusy(true);
     const r = await api.query(c, allowWrite);
-    setLog((l) => [`> ${c}`, r.ok ? (r.reply || '(no reply)') : `! ${r.error}`, ...l].slice(0, 200));
+    setLog((l) => [`> ${c}`, r.ok ? (r.reply ? `${r.reply}   [${r.reply.length} bytes]` : '(no reply after 12 s)') : `! ${r.error}`, ...l].slice(0, 200));
     setBusy(false);
   };
   const doScan = async () => {
