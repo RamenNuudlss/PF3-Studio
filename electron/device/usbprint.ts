@@ -181,3 +181,100 @@ export class UsbPrintHandle {
     });
   }
 }
+
+/* ------------------------------------------------------------------------------------------
+ * Overlapped (asynchronous) port, used for two-way firmware conversations.
+ * A synchronous handle serialises all I/O on the file object, so a ReadFile that waits for
+ * data the printer never sends blocks every later WriteFile, and CancelIoEx can't reliably
+ * break it. With FILE_FLAG_OVERLAPPED each read has a real timeout and can be cancelled.
+ * ---------------------------------------------------------------------------------------- */
+const FILE_FLAG_OVERLAPPED = 0x40000000;
+const ERROR_IO_PENDING = 997;
+const WAIT_OBJECT_0 = 0;
+
+let ovApi: ReturnType<typeof bindOv> | null = null;
+function bindOv() {
+  const w = win();
+  const kernel32 = koffi.load('kernel32.dll');
+  const OVERLAPPED = koffi.struct('PF3_OVERLAPPED', {
+    Internal: 'uintptr_t', InternalHigh: 'uintptr_t', Offset: 'uint32', OffsetHigh: 'uint32', hEvent: 'void *',
+  });
+  return {
+    OVERLAPPED,
+    CreateEventW: kernel32.func('void* __stdcall CreateEventW(void *sa, bool manual, bool initial, const char16_t *name)'),
+    ResetEvent: kernel32.func('bool __stdcall ResetEvent(void *h)'),
+    WaitForSingleObject: kernel32.func('uint32_t __stdcall WaitForSingleObject(void *h, uint32_t ms)'),
+    ReadFileOv: kernel32.func('bool __stdcall ReadFile(HANDLE h, void *buf, uint32_t len, void *read, void *ov)'),
+    WriteFileOv: kernel32.func('bool __stdcall WriteFile(HANDLE h, void *buf, uint32_t len, void *written, void *ov)'),
+    GetOverlappedResult: kernel32.func('bool __stdcall GetOverlappedResult(HANDLE h, void *ov, _Out_ uint32_t *n, bool wait)'),
+    CancelIoExOv: kernel32.func('bool __stdcall CancelIoEx(HANDLE h, void *ov)'),
+    w,
+  };
+}
+function ov() { if (!ovApi) ovApi = bindOv(); return ovApi; }
+
+export class UsbPrintPort {
+  private h: any;
+  private ev: any;
+  private stuck = false;
+  constructor(public readonly path: string) {
+    const w = win(); const o = ov();
+    this.h = w.CreateFileW(path, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, null, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, null);
+    if (isInvalid(this.h)) {
+      const err = w.GetLastError();
+      throw Object.assign(new Error(err === 5 ? 'The printer is in use by another program (access denied)' : err === 2 ? 'Printer disconnected' : `Could not open printer (Windows error ${err})`), { code: err });
+    }
+    this.ev = o.CreateEventW(null, true, false, null);
+  }
+
+  close() {
+    const w = win();
+    if (this.h) { w.CloseHandle(this.h); this.h = null; }
+    if (this.ev) { w.CloseHandle(this.ev); this.ev = null; }
+  }
+
+  /** Run one overlapped transfer; resolves with bytes transferred (0 on timeout/failure). */
+  private async transfer(kind: 'read' | 'write', mem: any, len: number, timeoutMs: number): Promise<number> {
+    if (this.stuck) throw new Error('Printer channel is stuck - reopen it');
+    const o = ov(); const w = o.w;
+    const ovl = koffi.alloc(o.OVERLAPPED, 1);
+    koffi.encode(ovl, o.OVERLAPPED, { Internal: 0, InternalHigh: 0, Offset: 0, OffsetHigh: 0, hEvent: this.ev });
+    o.ResetEvent(this.ev);
+    const ok = kind === 'read' ? o.ReadFileOv(this.h, mem, len, null, ovl) : o.WriteFileOv(this.h, mem, len, null, ovl);
+    if (!ok) {
+      const err = w.GetLastError();
+      if (err !== ERROR_IO_PENDING) { koffi.free(ovl); return 0; }
+      const r: number = await new Promise((res) => o.WaitForSingleObject.async(this.ev, timeoutMs, (_e: any, v: number) => res(v)));
+      if (r !== WAIT_OBJECT_0) {
+        o.CancelIoExOv(this.h, ovl);
+        const r2: number = await new Promise((res) => o.WaitForSingleObject.async(this.ev, 3000, (_e: any, v: number) => res(v)));
+        if (r2 !== WAIT_OBJECT_0) { this.stuck = true; return 0; } // leak ovl: kernel may still own it
+      }
+    }
+    const n = [0];
+    const done = o.GetOverlappedResult(this.h, ovl, n, false);
+    koffi.free(ovl);
+    return done ? n[0] : 0;
+  }
+
+  async write(data: Buffer, timeoutMs = 30000): Promise<number> {
+    const mem = koffi.alloc('uint8', Math.max(1, data.length));
+    new Uint8Array(koffi.view(mem, data.length)).set(data);
+    try {
+      const n = await this.transfer('write', mem, data.length, timeoutMs);
+      if (n !== data.length) throw new Error(`Write to printer timed out (${n}/${data.length} bytes)`);
+      return n;
+    } finally { if (!this.stuck) koffi.free(mem); }
+  }
+
+  /** Read whatever the printer sends within `ms`; empty buffer on timeout. */
+  async read(ms: number, max = 4096): Promise<Buffer> {
+    const mem = koffi.alloc('uint8', max);
+    try {
+      const n = await this.transfer('read', mem, max, ms);
+      return n ? Buffer.from(new Uint8Array(koffi.view(mem, n)).slice()) : Buffer.alloc(0);
+    } finally { if (!this.stuck) koffi.free(mem); }
+  }
+
+  get isStuck() { return this.stuck; }
+}

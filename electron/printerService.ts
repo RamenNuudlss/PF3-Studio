@@ -6,7 +6,7 @@ import path from 'path';
 const VIRTUAL_DIR = process.env.PF3_PRINT_TO_DIR || null;
 const VIRTUAL_ID = 'MFG:Microboards;MDL:PF-3 (virtual);CMD:PCL3GUI,PJL,DW-PCL;CLS:PRINTER;S:0300000000000000002C100004BC200003C;';
 let virtualSeq = 0;
-import { listDevices, UsbPrintHandle } from './device/usbprint';
+import { listDevices, UsbPrintHandle, UsbPrintPort } from './device/usbprint';
 import { parseStatus, PrinterStatus, STATE_TEXT } from './core/status';
 import { udw } from './core/pcl';
 
@@ -132,24 +132,28 @@ export class PrinterService extends EventEmitter {
     return this.withLock(async () => {
       const devs = listDevices();
       if (!devs.length) throw new Error('PF-3 not connected');
-      const h = new UsbPrintHandle(devs[0].path);
+      const h = new UsbPrintPort(devs[0].path);
       this.writing = true;
-      try {
-        await h.readUntilQuiet(300, 150); // drain anything stale
+      const work = (async () => {
+        await h.read(200); // drain anything stale
         const line = cmd.trim().endsWith(';') ? cmd.trim() : cmd.trim() + ';';
         const expected = line.split(';').filter((x) => x.trim()).length;
         // exact wrapper used by the Microboards language monitor (SendMechwareCmd)
-        await h.write(udw(line));
+        await h.write(udw(line), 10000);
         // GetMechwareResponseASCII: read until the reply ends with ';' (original waited up to 100 s)
         let reply = '';
         const t0 = Date.now();
-        while (Date.now() - t0 < totalMs) {
-          const b = await h.readTimeout(1500);
+        while (Date.now() - t0 < totalMs && !h.isStuck) {
+          const b = await h.read(1500);
           if (b.length) reply += b.toString('latin1');
           const answered = (reply.match(/;/g) ?? []).length;
           if (reply && /;\s*$/.test(reply) && answered >= expected) break;
         }
         return reply.replace(/\0/g, '').trim();
+      })();
+      const guard = new Promise<string>((_, rej) => setTimeout(() => rej(new Error(`printer did not respond within ${Math.round((totalMs + 15000) / 1000)} s`)), totalMs + 15000));
+      try {
+        return await Promise.race([work, guard]);
       } finally {
         this.writing = false;
         h.close();

@@ -23,8 +23,11 @@ export default function FirmwareConsole() {
 
   const run = async (c: string) => {
     setBusy(true);
-    const r = await api.query(c, allowWrite);
-    setLog((l) => [`> ${c}`, r.ok ? (r.reply ? `${r.reply}   [${r.reply.length} bytes]` : '(no reply after 12 s)') : `! ${r.error}`, ...l].slice(0, 200));
+    const t0 = Date.now();
+    let r: any;
+    try { r = await api.query(c, allowWrite); } catch (e: any) { r = { ok: false, error: e?.message ?? String(e) }; }
+    const secs = ((Date.now() - t0) / 1000).toFixed(1);
+    setLog((l) => [`> ${c}`, r.ok ? (r.reply ? `${r.reply}   [${r.reply.length} bytes, ${secs} s]` : `(no reply after ${secs} s)`) : `! ${r.error}`, ...l].slice(0, 200));
     setBusy(false);
   };
   const doScan = async () => {
@@ -47,6 +50,7 @@ export default function FirmwareConsole() {
         <button className="btn sm primary" disabled={busy} onClick={() => run(cmd)}>Send</button>
       </div>
       <Check checked={allowWrite} onChange={setAllowWrite}><span style={{ color: allowWrite ? 'var(--bad)' : undefined }}>Allow write commands (can change printer settings permanently)</span></Check>
+      {busy && <div className="faint">Waiting for the printer… (up to ~15 s)</div>}
       {log.length > 0 && <pre className="code" style={{ maxHeight: 200, whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>{log.join('\n')}</pre>}
       <div className="divider" style={{ margin: '4px 0' }} />
       <div className="label">Scan settings store (read-only)</div>
